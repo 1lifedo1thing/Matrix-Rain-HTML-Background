@@ -181,7 +181,7 @@ const rainCameraGPU = {
     },
     pack(mark,index,target=this.staging,slot=(this.write+index)%this.capacity){
         const glyph=this.glyph(mark.char),base=mark.rgb||(mark.rgb=this.color(mark.color)),rgb=mark.cloudRGB||base,v=target;let n=index*this.stride;
-        v[n++]=mark.x;v[n++]=mark.y;v[n++]=mark.z;v[n++]=mark.fontSize;v[n++]=rgb[0];v[n++]=rgb[1];v[n++]=rgb[2];v[n++]=mark.cloudAlpha??mark.alpha;
+        v[n++]=mark.x;v[n++]=mark.y;v[n++]=mark.z;v[n++]=mark.fontSize;v[n++]=rgb[0];v[n++]=rgb[1];v[n++]=rgb[2];v[n++]=(mark.cloudAlpha??mark.alpha);
         for(const value of glyph.uv)v[n++]=value;for(const value of glyph.shape)v[n++]=value;v[n++]=(mark.cloudAge===undefined?mark.frame:rainCamera.frame-1-mark.cloudAge)%4096;v[n++]=mark.cloudAge===undefined?mark.trailLength:-Math.max(1,mark.trailLength);for(const value of mark.delta)v[n++]=mark.cloudAge===undefined?value:0;
         v[n]=glyph.mode+(mark.cloudInstance?2:0)+4*(mark.ownerRow||0);
     },
@@ -198,7 +198,13 @@ const rainCameraGPU = {
     },
     rebuild(camera){
         const required=Math.max(16384,camera.marks.length*2);if(this.capacity<required){while(this.capacity<required)this.capacity*=2;this.staging=new Float32Array(this.capacity*this.stride);this.gl.bindBuffer(this.gl.ARRAY_BUFFER,this.buffer);this.gl.bufferData(this.gl.ARRAY_BUFFER,this.capacity*this.stride*4,this.gl.DYNAMIC_DRAW);}
-        this.used=0;this.write=0;this.batches.length=0;this.batchFirst=0;this.invalidate=false;this.lastCompact=camera.frame;const bytes=this.upload(camera.marks);camera.pending.length=0;return bytes;
+        this.used=0;this.write=0;this.batches.length=0;this.batchFirst=0;this.invalidate=false;this.lastCompact=camera.frame;let marks=camera.marks;
+        if(this.groupCloud){
+            const tiled=[],untiled=[];for(const p of marks)(p.cloudInstance?untiled:tiled).push(p);
+            // Preserve native trail ordering; no optional depth-separation pass.
+            this.groupNativeCount=tiled.length;marks=tiled.concat(untiled);
+        }
+        const bytes=this.upload(marks);camera.pending.length=0;return bytes;
     },
     tileVisible(camera,tile){
         if(camera.mediaDepiction||this.disableCull)return true;const b=camera.bounds;if(!b)return false;const r=camera.rotation;
@@ -214,6 +220,10 @@ const rainCameraGPU = {
     render(camera,phase=1){
         const started=performance.now();if(!this.init())return;const gl=this.gl,options=window.matrixRainRendering,width=matrixCanvas.width,height=matrixCanvas.height;
         const owned=window.rainCloud?.ownershipMask?.(camera);
+        // Keep world-space Cloud trails out of every repeating rain tile draw.
+        const groupCloud=!!window.rainCloudTrails&&camera.marks.some(p=>p.cloudInstance);
+        if(groupCloud||this.groupCloud)this.invalidate=true;
+        this.groupCloud=groupCloud;
         const age=Math.max(0,camera.frame-1),trails=window.matrixRainTrails;this.expire(age,trails?.enabled!==false);let uploaded=0;
         // Unequal lifetimes leave holes inside a birth batch. Compact occasionally
         // when those dead slots would cost more than an amortized history upload.
@@ -253,17 +263,23 @@ const rainCameraGPU = {
         gl.uniform1f(u.cloudAmount,window.rainCloud?.amount||0);
         gl.uniform1f(u.ageNow,age%4096);gl.uniform1f(u.phase,Math.max(0,Math.min(1,phase)));gl.uniform1i(u.smoothMotion,options.smooth!==false);gl.uniform1i(u.stepped,trails?.stepped!==false);gl.uniform1i(u.variety,trails?.enabled!==false);
 
-        const start=this.batches[this.batchFirst]?.start||0,first=Math.min(this.used,this.capacity-start);let cells=0;
-        const draw=offset=>{cells++;gl.uniform3fv(u.cell,offset);if(first){this.bindInstances(start);this.instances.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP,0,4,first);}if(first<this.used){this.bindInstances(0);this.instances.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP,0,4,this.used-first);}};
+        const start=this.batches[this.batchFirst]?.start||0,first=Math.min(this.used,this.capacity-start);let cells=0,submitted=0;
+        const draw=(offset,untiled=false)=>{
+            const count=this.groupCloud?(untiled?this.used-this.groupNativeCount:this.groupNativeCount):this.used;
+            if(!count)return;
+            cells++;submitted+=count;gl.uniform3fv(u.cell,offset);
+            if(this.groupCloud){this.bindInstances(untiled?this.groupNativeCount:0);this.instances.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP,0,4,count);}
+            else{if(first){this.bindInstances(start);this.instances.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP,0,4,first);}if(first<this.used){this.bindInstances(0);this.instances.drawArraysInstancedANGLE(gl.TRIANGLE_STRIP,0,4,this.used-first);}}
+        };
         // Historical tails retain their original tiled projection and lifetime.
         // Only adopted cloud heads are individual, untiled world instances.
         gl.uniform1i(u.untiledPass,false);
         const drawTiles=owned?.tiles||camera.tiles;
         if(camera.marks.some(p=>!p.cloudInstance))for(let i=0;i<drawTiles.length;i++){const tile=drawTiles[i];if(owned?.packed||this.tileVisible(camera,tile)){gl.uniform1f(u.ownershipCell,i);draw(tile.offset);}}
-        if(camera.marks.some(p=>p.cloudInstance)){gl.uniform1i(u.untiledPass,true);draw([0,0,0]);}
+        if(camera.marks.some(p=>p.cloudInstance)){gl.uniform1i(u.untiledPass,true);draw([0,0,0],true);}
         gl.uniform1i(u.mediaLive,false);gl.uniform1f(u.mediaInfluence,0);
         if(post)this.post(glow,contrast,pw,ph);
-        this.stats={cells,selectedCells:camera.tiles.length,marks:camera.marks.length,gpuSlots:this.used,instances:cells*this.used,cpuMs:performance.now()-started,uploadedBytes:uploaded,sharp:this.fontReady&&options.sharp!==false,pixelRatio:ratio,size:[pw,ph],glow,phase};
+        this.stats={cells,selectedCells:camera.tiles.length,marks:camera.marks.length,gpuSlots:this.used,instances:submitted,cpuMs:performance.now()-started,uploadedBytes:uploaded,sharp:this.fontReady&&options.sharp!==false,pixelRatio:ratio,size:[pw,ph],glow,phase};
         const mediaOutput=document.getElementById('media-assembly-status');if(mediaOutput){mediaOutput.dataset.gpuCpuMs=this.stats.cpuMs.toFixed(2);mediaOutput.dataset.worldMarks=String(camera.marks.length);mediaOutput.dataset.cells=String(cells);mediaOutput.dataset.characterMode=pictureMode?characters.mode:'original';mediaOutput.dataset.patternSampling=this.pictureVertexSampling?'vertex':'fragment';}
         if(this.auditCapture){this.auditCapture(this.canvas);this.auditCapture=null;}
     },

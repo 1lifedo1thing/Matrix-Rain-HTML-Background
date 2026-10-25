@@ -69,7 +69,7 @@
   if(this.active){this.returnRequested=false;if(this.returning){this.returning=false;this.sampleAge=1;for(const p of this.heads){const s=p.cloudState;s.entryVelocity=[s.vx,s.vy,s.vz];s.motionAge=0;}}this.refresh?.();return;}
   rainCamera.beginContinuousView();rainCamera.prepareView();
   const originals=rainCamera.marks.slice(),latest=new Map();
-  for(const p of originals){const old=latest.get(p.streamId);if(!old||p.frame>=old.frame)latest.set(p.streamId,p);}
+  for(const p of originals){if(p.cloudTrail)continue;const old=latest.get(p.streamId);if(!old||p.frame>=old.frame)latest.set(p.streamId,p);}
   // Include live sources whose latest head was culled or has no visible copy.
   for(const [id,p]of this.latest)if(rainCamera.frame-p.frame<=2)latest.set(id,p);
   this.homes=new Map();this.heads=[];this.gathering=true;this.gatherAge=0;this.waitingHeads=0;this.tape=[];
@@ -79,7 +79,7 @@
    if(rainCamera.frame-1-source.frame<.5)for(let k=0;k<3;k++)home.mark[axes[k]]-=source.delta[k]*(1-phase);
    // Keep the native records byte-for-byte: positions, spacing, interpolation,
    // birth time, alpha and trail length all stay owned by the rain renderer.
-   home.tails=originals.filter(p=>p.streamId===id&&p!==source);
+   home.tails=originals.filter(p=>!p.cloudTrail&&p.streamId===id&&p!==source);
   }
   const chosen=new Set(latest.values());rainCamera.marks=originals.filter(p=>!chosen.has(p));rainCamera.pending=[];
   this.ensureCopies(rainCamera,true);
@@ -169,6 +169,7 @@
    }
    s.vx=(p.x-old[0])/dt;s.vy=(p.y-old[1])/dt;s.vz=(p.z-old[2])/dt;
    p.cloudAlpha=s.returnAlpha+(this.enabled(p,camera)*source.alpha-s.returnAlpha)*mix;
+   root.rainCloudTrails?.trace(p,camera,old,dt);
   }
   if(progress>=1)this.finishReturn(camera);
  };
@@ -189,8 +190,8 @@
    const stream=camera.streams.get(id);
    if(stream){for(let k=0;k<3;k++)stream[axes[k]]=mark[axes[k]]-home.offset[k];stream.delta=[0,0,0];stream.frame=camera.frame-1;}
   }
-  camera.marks=camera.marks.filter(p=>!p.cloudInstance&&!p.gatherTail).concat(native);camera.pending=[];
-  for(const p of camera.marks)p.ownerRow=this.ownership.get(p.streamId)?.row||0;
+  camera.marks=camera.marks.filter(p=>p.cloudTrail||(!p.cloudInstance&&!p.gatherTail)).concat(native);camera.pending=[];
+  for(const p of camera.marks)if(!p.cloudTrail)p.ownerRow=this.ownership.get(p.streamId)?.row||0;
   this.heads=[];this.tape=[];this.active=this.returning=this.gathering=false;this.amount=this.target=0;
   camera.refreshCloudBounds();rainCameraGPU.invalidate=true;this.refresh?.();
  };
@@ -331,6 +332,7 @@
  };
  state.moveHead=function(p,dt){
   if(!(dt>0))return;
+  const previous=root.rainCloudTrails?[p.x,p.y,p.z]:null;
   const rate=this.speedScale(),follow=1-Math.exp(-dt*9*rate),s=p.cloudState,source=this.latest.get(p.streamId),delta=source?.delta||[0,0,0],length=Math.hypot(...delta)||1;
   if(s.tx!==undefined){
    const drift=this.maxSpeed*rate*.07,target=[s.tx+delta[0]/length*drift,s.ty+delta[1]/length*drift,s.tz+delta[2]/length*drift];
@@ -338,6 +340,7 @@
    else{s.vx+=(target[0]-s.vx)*follow;s.vy+=(target[1]-s.vy)*follow;s.vz+=(target[2]-s.vz)*follow;}
   }
   p.x+=s.vx*dt;p.y+=s.vy*dt;p.z+=s.vz*dt;s.motionAge+=dt;
+  if(previous)root.rainCloudTrails.trace(p,rainCamera,previous,dt);
  };
  state.recordMotion=function(dt){
   this.entryAge+=dt;
@@ -382,6 +385,7 @@
   if(start-(this.lastRefresh||0)>150){this.lastRefresh=start;this.refresh?.();}
  };
  state.reset=function(){
+  root.rainCloudTrails?.reset(rainCamera);
   this.active=this.returning=this.gathering=this.prepareRequested=this.enterRequested=false;this.heads=[];this.tape=[];this.homes=null;this.latest.clear();this.ownership=this.ownershipRows=null;this.amount=this.target=0;this.error=null;
   rainCamera.cloudUntiled=false;
  };

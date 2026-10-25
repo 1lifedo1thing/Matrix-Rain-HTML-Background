@@ -242,6 +242,7 @@ const rainCamera = {
         this.marks.length=write;
         this.bounds=write?{center:[(x0+x1)/2,(y0+y1)/2,(z0+z1)/2],half:[(x1-x0)/2,(y1-y0)/2,(z1-z0)/2],pad,motionMargin}:null;
         this.frame++;
+        window.rainCloudTrails?.sweep(this);
     },
     refreshCloudBounds() {
         let x0=Infinity,y0=Infinity,z0=Infinity,x1=-Infinity,y1=-Infinity,z1=-Infinity,pad=0,motionMargin=0;

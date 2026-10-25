@@ -86,3 +86,7 @@ Shading ranks 30 glyphs by measured ink coverage. Lines uses Sobel tangent bucke
 The GPU proof at `tests/media-characters-gpu.html?audit=1` checks the actual renderer against the preceding Original path, all Braille masks, Lines orientations, projection, resize and context recovery. Add `&picture-fragment=1` to exercise the fallback. Public test fixtures are the MDN flower video and NASA Eileen Collins portrait distributed by scikit-image.
 
 Auto scenes (1.7.2) stays within a readable 14–20px font range, choosing different middle-range sizes without sticking at the smallest boundary. The time between shifts now supports 0.1–60 seconds in tenth-second steps. Existing transitions finish before the next shift begins; their speed and the rain’s birth history are preserved. Manual controls and the previous combined-load limits remain intact.
+
+## Cloud trails — 1.9.2
+
+Cloud heads now leave finite trails using the normal rain fade. History continues through both transitions and finishes fading after the return to rain. Cloud trails start enabled and can be switched off without erasing existing tails. The experimental depth-separation effect has been removed. Cloud history is bounded and rendered once in world space, rather than copied into every rain cell.
